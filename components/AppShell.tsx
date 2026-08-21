@@ -60,6 +60,12 @@ type AutoNameStatus =
 
 const TOP_BAR_ICON_BUTTON_SIZE = 36;
 const LANGUAGE_MENU_WIDTH = 176;
+// 标签页标题 loading 动画的帧序列（半月旋转，比 braille 更醒目）
+const TITLE_SPINNER_FRAMES = ["◐", "◓", "◑", "◒"];
+// 标题动画的帧间隔：空闲回调触发很频繁，需要限速避免转得太快（实测对比后选定 250ms）
+const TITLE_FRAME_INTERVAL_MS = 250;
+// 标签页隐藏时补充 runningSessionIds 的轮询间隔（可见时由 SessionSidebar 的 2.5s 轮询负责）
+const BACKGROUND_RUNNING_POLL_MS = 5000;
 
 export function AppShell() {
   const router = useRouter();
@@ -893,8 +899,70 @@ export function AppShell() {
   const activeFileTab = fileTabs.find((tab) => tab.id === activeFileTabId) ?? null;
   const activeCwdName = activeCwd ? getFileName(activeCwd) || activeCwd : null;
   const windowTitle = activeCwdName ? `${activeCwdName} - Pi Web` : "Pi Web";
+  // 任意会话（含后台会话）在工作中时，标题前加动态 loading 前缀
+  const anySessionWorking = runningSessionIds.size > 0;
+
+  // SessionSidebar 的 /api/agent/running 轮询在标签页隐藏时暂停（省电设计），
+  // 会导致后台结束的会话无法清除标题 loading 态；这里在隐藏时以低频轮询补上，
+  // 标签页回到可见即交还给侧边栏
+  useEffect(() => {
+    let timer: number | undefined;
+    const poll = async () => {
+      try {
+        const res = await fetch("/api/agent/running", { cache: "no-store" });
+        if (!res.ok) return;
+        const data = await res.json() as { runningSessionIds?: string[] };
+        setRunningSessionIds(new Set(data.runningSessionIds ?? []));
+      } catch {
+        // 保留上次状态，下个周期重试
+      }
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        void poll();
+        timer = window.setInterval(() => void poll(), BACKGROUND_RUNNING_POLL_MS);
+        return;
+      }
+      if (timer !== undefined) {
+        window.clearInterval(timer);
+        timer = undefined;
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      if (timer !== undefined) window.clearInterval(timer);
+    };
+  }, []);
 
   useEffect(() => {
+    if (anySessionWorking) {
+      // 动画模式：用 requestIdleCallback 调度，浏览器空闲时才写标题，不占高优先级时间片。
+      // rIC 在空闲页面上触发很频繁，用时间戳把帧推进限速在 TITLE_FRAME_INTERVAL_MS，
+      // 避免标题转得太快；timeout 与之对齐兜底。此模式不挂 MutationObserver，避免互相覆盖
+      let frameIndex = 0;
+      let lastFrameAt = 0;
+      let cancelled = false;
+      let handle = 0;
+      const schedule = () => {
+        handle = requestIdleCallback(() => {
+          if (cancelled) return;
+          const now = Date.now();
+          if (now - lastFrameAt >= TITLE_FRAME_INTERVAL_MS) {
+            lastFrameAt = now;
+            frameIndex = (frameIndex + 1) % TITLE_SPINNER_FRAMES.length;
+            document.title = `${TITLE_SPINNER_FRAMES[frameIndex]} ${windowTitle}`;
+          }
+          schedule();
+        }, { timeout: TITLE_FRAME_INTERVAL_MS });
+      };
+      schedule();
+      return () => {
+        cancelled = true;
+        cancelIdleCallback(handle);
+      };
+    }
+
     const syncWindowTitle = () => {
       if (document.title !== windowTitle) document.title = windowTitle;
     };
@@ -903,7 +971,7 @@ export function AppShell() {
     const observer = new MutationObserver(syncWindowTitle);
     observer.observe(document.head, { childList: true, subtree: true, characterData: true });
     return () => observer.disconnect();
-  }, [windowTitle]);
+  }, [windowTitle, anySessionWorking]);
 
   const sidebarContent = (
     <>
