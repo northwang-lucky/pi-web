@@ -240,18 +240,16 @@ export function createDispatchRuntime(deps: DispatchRuntimeDeps) {
       }
 
       // The controller resolves the three-level fallback (dispatch param →
-      // profile → parent session) and surfaces the effective values on the run.
-      // We read them from the run rather than re-resolving, so the event always
-      // reflects the authoritative resolved values.  Until B4 lands the
-      // runtime-side resolution, the run may not carry model/thinking; the
-      // fallback here is params → parent state only (no invented defaults).
+      // profile → parent session) and surfaces the authoritative effective
+      // values on the run.  We read them directly — no transitional fallback
+      // needed because B4 guarantees model/thinking are always populated.
       const runExtra = run as unknown as { model?: string; thinking?: string | null; tools?: string[] };
       resolveCompletion({
         phase,
         dispatchId,
         childSessionId: run.sessionId,
-        effectiveModel: runExtra.model ?? params.model ?? parentState.model ?? "",
-        effectiveThinking: runExtra.thinking ?? params.thinking ?? parentState.thinking ?? null,
+        effectiveModel: runExtra.model ?? "",
+        effectiveThinking: runExtra.thinking ?? null,
         result: run.result,
         error: error ?? run.error,
         effectiveTools: runExtra.tools,

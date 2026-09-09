@@ -58,6 +58,10 @@ export interface SubagentResourceSnapshot {
   tools: string[];
   loadSkills: boolean;
   loadExtensions: boolean;
+  /** G4: authoritative effective model after three-level fallback resolution. */
+  model?: string;
+  /** G4: authoritative effective thinking level after three-level fallback resolution. */
+  thinking?: string | null;
 }
 
 export interface SubagentSessionResources {
@@ -89,6 +93,10 @@ export interface SubagentRunInfo {
   completedAt?: string;
   result?: string;
   error?: string;
+  /** G4: authoritative effective model after three-level fallback resolution. */
+  model?: string;
+  /** G4: authoritative effective thinking level after three-level fallback resolution. */
+  thinking?: string | null;
 }
 
 const DEFAULT_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls"];

@@ -159,6 +159,17 @@ export function createSubagentController(
 
       const agentDir = getAgentDir();
       const parentModelRuntime = (parent.inner as unknown as { modelRuntime: ModelRuntime }).modelRuntime;
+      // G4: resolve the model early so the effective value is available for both
+      // the resourceSnapshot (audit trail) and the initialRun lifecycle event.
+      const requestedModel = parseSubagentModel(parentModelRuntime, request.model ?? profile.model);
+      const parentModel = parent.inner.model as ReturnType<ModelRuntime["getModel"]>;
+      // G4: resolve the authoritative effective model from the three-level
+      // fallback (dispatch param → profile → parent session).  The local
+      // variable narrows the union so TypeScript can access provider/id.
+      const resolvedModel = requestedModel ?? parentModel;
+      const effectiveModel = resolvedModel
+        ? `${resolvedModel.provider}/${resolvedModel.id}`
+        : "";
       const settingsManager = SettingsManager.create(parent.cwd, agentDir);
       const inheritedParentContext = inheritContext
         ? `The following is the active conversation context from the parent session. Use it only as background for the delegated task:\n${parentContextText(parent)}`
@@ -253,13 +264,14 @@ export function createSubagentController(
           tools: [...activeTools],
           loadSkills: profile.loadSkills,
           loadExtensions: profile.loadExtensions,
+          // G4: surface authoritative effective values in the audit trail.
+          model: effectiveModel,
+          thinking: thinking ?? null,
         },
       };
       sessionManager.appendCustomEntry(SUBAGENT_META_TYPE, metadata);
       sessionManager.appendSessionInfo(metadata.description);
 
-      const requestedModel = parseSubagentModel(parentModelRuntime, request.model ?? profile.model);
-      const parentModel = parent.inner.model as ReturnType<ModelRuntime["getModel"]>;
       const { session: inner } = await createAgentSessionFromServices({
         services,
         sessionManager,
@@ -288,6 +300,11 @@ export function createSubagentController(
         runInBackground,
         status: "running",
         createdAt,
+        // G4: surface authoritative effective values from the three-level fallback
+        // resolution — these are the values the runtime actually used, not an echo
+        // of the dispatch input parameters.
+        model: effectiveModel,
+        thinking: thinking ?? null,
       };
 
       let turnCount = 0;
