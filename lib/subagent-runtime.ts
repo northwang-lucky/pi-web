@@ -53,8 +53,8 @@ export interface SubagentRuntimeDependencies {
   resolveSessionPath(sessionId: string): Promise<string | null>;
   invalidateSessionList(): void;
   isBuiltInSubagentsEnabled?(): boolean;
-  /** G5: maximum concurrent subagents per parent session. Falls back to 4 when absent. */
-  getMaxConcurrentSubagents?(): number;
+  /** G5: maximum concurrent subagents per parent session. Falls back to 4 when absent or undefined. */
+  getMaxConcurrentSubagents?(): number | undefined;
 }
 
 export interface SubagentController {

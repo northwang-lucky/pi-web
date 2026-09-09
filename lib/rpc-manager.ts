@@ -2,7 +2,7 @@ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { createAgentSessionFromServices, createAgentSessionServices, getAgentDir, initTheme, SessionManager, SettingsManager, Theme } from "@earendil-works/pi-coding-agent";
 import { KeybindingsManager as TuiKeybindingsManager, TUI_KEYBINDINGS } from "@earendil-works/pi-tui";
 import { randomUUID } from "crypto";
-import { existsSync, readFileSync, realpathSync, writeFileSync } from "fs";
+import { existsSync, realpathSync, writeFileSync } from "fs";
 import { resolve } from "path";
 import { validateAgentImages } from "./image-attachments";
 import { invalidateModelsCache } from "./models-cache";
@@ -40,7 +40,7 @@ import {
 } from "./subagents";
 import { createSubagentController } from "./subagent-runtime";
 import { registerDispatchRuntime } from "./subagent-dispatch";
-import { getSubagentSettingsPath, isBuiltInSubagentsEnabled } from "./subagent-settings";
+import { isBuiltInSubagentsEnabled, readSubagentSettings } from "./subagent-settings";
 import { resolveShellTools } from "./powershell-settings";
 import { CHAT_ONLY_RESOURCE_LOADER_OPTIONS, contextFilesSystemPrompt } from "./chat-only";
 import {
@@ -1688,6 +1688,15 @@ const SUBAGENT_CONTROLLER = createSubagentController({
   resolveSessionPath,
   invalidateSessionList: invalidateSessionListCache,
   isBuiltInSubagentsEnabled,
+  // G5: production source for the configurable concurrency cap. Malformed
+  // settings fail closed: undefined lets the runtime fall back to its default.
+  getMaxConcurrentSubagents: () => {
+    try {
+      return readSubagentSettings().maxConcurrentSubagents;
+    } catch {
+      return undefined;
+    }
+  },
 });
 
 export function getSubagentRun(sessionId: string) {
@@ -1716,14 +1725,7 @@ registerDispatchRuntime({
   getController: () => SUBAGENT_CONTROLLER,
   readSettings: () => {
     try {
-      const settingsPath = getSubagentSettingsPath();
-      const raw = readFileSync(settingsPath, "utf8");
-      const parsed = JSON.parse(raw) as Record<string, unknown>;
-      return {
-        maxConcurrentSubagents: typeof parsed.maxConcurrentSubagents === "number"
-          ? parsed.maxConcurrentSubagents
-          : undefined,
-      };
+      return readSubagentSettings();
     } catch {
       return {};
     }
