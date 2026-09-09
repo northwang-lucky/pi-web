@@ -51,6 +51,8 @@ export interface StartSubagentRequest {
   denyExtensions?: string[];
   /** G3 additional tool exclusion. Reserved control names stay excluded. */
   excludeTools?: string[];
+  /** G6 when true the child session is not persisted to disk (in-memory only). */
+  ephemeral?: boolean;
   signal?: AbortSignal;
   onUpdate?: (run: SubagentRunInfo) => void;
 }

@@ -1733,6 +1733,11 @@ registerDispatchRuntime({
   getParentState: () => ({}),
   // Resolve the real ExtensionContext from the session registry so the
   // controller receives a genuine parent context (not a minimal shim).
+  // The runtime (subagent-runtime.ts:140) only reads
+  // parentContext.sessionManager.getSessionId(); all other parent data
+  // comes from the HostSession retrieved via dependencies.getSession().
+  // We supply sessionManager and cwd as the minimum fields that match
+  // the ExtensionContext contract without blindly copying all ~15 fields.
   getParentContext: (parentSessionId) => {
     const wrapper = getRegistry().get(parentSessionId);
     if (!wrapper) return undefined;

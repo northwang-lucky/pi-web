@@ -256,7 +256,13 @@ export function createSubagentController(
         activeTools = activeTools.filter((tool) => !disallowed.has(tool));
       }
 
-      const sessionManager = SessionManager.create(parent.cwd, undefined, { parentSession: parent.sessionFile });
+      // G6: ephemeral sessions use an in-memory SessionManager so no .jsonl
+      // is written to disk.  Non-ephemeral sessions use the standard
+      // create() path which persists to ~/.pi/agent/sessions/.
+      const ephemeral = request.ephemeral ?? false;
+      const sessionManager = ephemeral
+        ? SessionManager.inMemory(parent.cwd, { parentSession: parent.sessionFile })
+        : SessionManager.create(parent.cwd, undefined, { parentSession: parent.sessionFile });
       const createdAt = new Date().toISOString();
       const metadata: SubagentMetadata = {
         version: 1,
@@ -279,8 +285,16 @@ export function createSubagentController(
           thinking: thinking ?? null,
         },
       };
-      sessionManager.appendCustomEntry(SUBAGENT_META_TYPE, metadata);
-      sessionManager.appendSessionInfo(metadata.description);
+      // G6: for ephemeral sessions, write the audit metadata to the parent
+      // session's custom entries so the dispatch metadata is not lost when
+      // the in-memory session vanishes.  Non-ephemeral sessions write to
+      // their own session file as before.
+      if (ephemeral) {
+        parent.inner.sessionManager.appendCustomEntry(SUBAGENT_META_TYPE, metadata);
+      } else {
+        sessionManager.appendCustomEntry(SUBAGENT_META_TYPE, metadata);
+        sessionManager.appendSessionInfo(metadata.description);
+      }
 
       const { session: inner } = await createAgentSessionFromServices({
         services,
@@ -395,7 +409,13 @@ export function createSubagentController(
           ...(result.result ? { result: result.result } : {}),
           ...(result.error ? { error: result.error } : {}),
         };
-        sessionManager.appendCustomEntry(SUBAGENT_RESULT_TYPE, persisted);
+        // G6: ephemeral sessions write result metadata to the parent session
+        // so the dispatch result is not lost when the in-memory session vanishes.
+        if (ephemeral) {
+          parent.inner.sessionManager.appendCustomEntry(SUBAGENT_RESULT_TYPE, persisted);
+        } else {
+          sessionManager.appendCustomEntry(SUBAGENT_RESULT_TYPE, persisted);
+        }
         stored.run = result;
         request.onUpdate?.(result);
         getSubagentRuns().delete(initialRun.sessionId);
