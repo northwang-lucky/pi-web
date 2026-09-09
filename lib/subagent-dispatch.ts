@@ -12,9 +12,6 @@
  *      and is reachable from in-process extensions that cannot resolve the module path.
  */
 import { randomUUID } from "node:crypto";
-import { existsSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { SubagentController } from "./subagent-runtime";
 import type { SubagentRunInfo } from "./subagents";
 
@@ -84,8 +81,6 @@ export interface DispatchRuntimeDeps {
   readSettings(): { maxConcurrentSubagents?: number };
   /** Return the parent session's live model/thinking state. */
   getParentState(): { model?: string; thinking?: string | null };
-  /** Override for the session storage root (used by S6 ephemeral tests). */
-  sessionRoot?: string;
   /**
    * Production-only: resolve the real ExtensionContext for the parent session.
    * When present the dispatch passes a genuine context to the controller;
@@ -153,18 +148,10 @@ export function createDispatchRuntime(deps: DispatchRuntimeDeps) {
       },
     };
 
-    // For non-ephemeral dispatches with a session root, create a real
-    // SessionManager so the child session is persisted to disk.  B6 moves
-    // the create-vs-inMemory decision into the runtime hook
-    // (subagent-runtime.ts:209) and this injected manager becomes the
-    // child's real manager; until then, the dispatch module owns the
-    // create-vs-inMemory choice and the test-path sessionRoot override.
+    // B6: the create-vs-inMemory decision is now owned by the runtime hook
+    // (subagent-runtime.ts:259).  The dispatch module only forwards the
+    // ephemeral flag; the controller creates the appropriate SessionManager.
     const ephemeral = params.ephemeral ?? false;
-    let childSessionManager: SessionManager | undefined;
-    if (!ephemeral && deps.sessionRoot) {
-      const sessionDir = join(deps.sessionRoot, "sessions");
-      childSessionManager = SessionManager.create(deps.sessionRoot, sessionDir);
-    }
 
     // Delegate to the controller.
     const request = {
@@ -179,13 +166,10 @@ export function createDispatchRuntime(deps: DispatchRuntimeDeps) {
       tools: params.tools,
       disallowedTools: params.disallowedTools,
       excludeTools: params.excludeTools,
+      ephemeral,
       maxTurns: params.maxTurns,
       inheritContext: params.inheritContext,
       inputFiles: params.inputFiles,
-      // Attach the real session manager for non-ephemeral dispatches so the
-      // controller can write entries through it.  Test-path only while
-      // deps.sessionRoot is set; B6 moves ownership to the runtime hook.
-      sessionManager: childSessionManager,
       // Frozen-test DI seam: the fake controller in
       // lib/subagent-dispatch.test.mjs reads _getParentState to resolve the
       // three-level model/thinking fallback in its own logic.  Production
@@ -215,29 +199,6 @@ export function createDispatchRuntime(deps: DispatchRuntimeDeps) {
       if (settled) return;
       settled = true;
       active.delete(dispatchId);
-
-      // For non-ephemeral dispatches, flush the session to disk so
-      // SessionManager.list() can discover the file.  The SDK delays the
-      // first write until an assistant message arrives; since a dispatched
-      // child may never produce one through the normal path, we follow the
-      // repo's established pattern for session-with-no-assistant (see
-      // persistBashOnlySession in rpc-manager.ts): write the header + any
-      // accumulated entries directly, then mark the manager as flushed.
-      if (childSessionManager) {
-        childSessionManager.appendCustomEntry("dispatch_header", {
-          dispatchId,
-          parentSessionId,
-        });
-        const sessionFile = childSessionManager.getSessionFile();
-        const header = childSessionManager.getHeader();
-        if (sessionFile && header && !existsSync(sessionFile)) {
-          const content = [header, ...childSessionManager.getEntries()]
-            .map((entry) => JSON.stringify(entry))
-            .join("\n") + "\n";
-          writeFileSync(sessionFile, content, { encoding: "utf8", flag: "wx" });
-          (childSessionManager as unknown as { flushed: boolean }).flushed = true;
-        }
-      }
 
       // The controller resolves the three-level fallback (dispatch param →
       // profile → parent session) and surfaces the authoritative effective
