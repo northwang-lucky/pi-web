@@ -5,11 +5,16 @@ import { writePrivateFileAtomicSync } from "./atomic-file";
 
 export interface SubagentSettings {
   builtInEnabled: boolean;
+  /** Maximum concurrent subagents per parent session. Defaults to 4 when absent or invalid. */
+  maxConcurrentSubagents: number;
 }
+
+const DEFAULT_MAX_CONCURRENT_SUBAGENTS = 4;
 
 type StoredSubagentSettings = Record<string, unknown> & {
   version?: unknown;
   builtInEnabled?: unknown;
+  maxConcurrentSubagents?: unknown;
 };
 
 export function getSubagentSettingsPath(agentDir = getAgentDir()): string {
@@ -29,7 +34,15 @@ export function readSubagentSettings(
   settingsPath = getSubagentSettingsPath(),
 ): SubagentSettings {
   const stored = readStoredSettings(settingsPath);
-  return { builtInEnabled: stored.builtInEnabled === true };
+  const raw = stored.maxConcurrentSubagents;
+  const maxConcurrentSubagents =
+    typeof raw === "number" && Number.isFinite(raw) && raw > 0
+      ? Math.floor(raw)
+      : DEFAULT_MAX_CONCURRENT_SUBAGENTS;
+  return {
+    builtInEnabled: stored.builtInEnabled === true,
+    maxConcurrentSubagents,
+  };
 }
 
 export function isBuiltInSubagentsEnabled(
@@ -53,5 +66,5 @@ export function writeBuiltInSubagentsEnabled(
     version: 1,
     builtInEnabled: enabled,
   }, null, 2));
-  return { builtInEnabled: enabled };
+  return readSubagentSettings(settingsPath);
 }

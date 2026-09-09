@@ -53,6 +53,8 @@ export interface SubagentRuntimeDependencies {
   resolveSessionPath(sessionId: string): Promise<string | null>;
   invalidateSessionList(): void;
   isBuiltInSubagentsEnabled?(): boolean;
+  /** G5: maximum concurrent subagents per parent session. Falls back to 4 when absent. */
+  getMaxConcurrentSubagents?(): number;
 }
 
 export interface SubagentController {
@@ -111,15 +113,15 @@ function parentContextText(parent: HostSession): string {
   return `${serialized.slice(0, SUBAGENT_CONTEXT_LIMIT)}\n[Parent context truncated]`;
 }
 
-function reserveSubagentSlot(parentSessionId: string): () => void {
+function reserveSubagentSlot(parentSessionId: string, maxConcurrent: number): () => void {
   const starting = getSubagentStartingCounts();
   const active = [...getSubagentRuns().values()].filter((item) =>
     item.run.parentSessionId === parentSessionId
       && (item.run.status === "starting" || item.run.status === "running")
   ).length;
   const startingCount = starting.get(parentSessionId) ?? 0;
-  if (active + startingCount >= MAX_CONCURRENT_SUBAGENTS) {
-    throw new Error(`A session can run at most ${MAX_CONCURRENT_SUBAGENTS} subagents at once`);
+  if (active + startingCount >= maxConcurrent) {
+    throw new Error(`A session can run at most ${maxConcurrent} subagents at once`);
   }
   starting.set(parentSessionId, startingCount + 1);
   return () => {
@@ -140,7 +142,15 @@ export function createSubagentController(
     if (!parent?.isAlive()) throw new Error("Parent session is no longer available");
     if (!parent.sessionFile) throw new Error("Parent session must be persisted before starting a subagent");
 
-    const releaseSlot = reserveSubagentSlot(parentSessionId);
+    // G5: read the configurable concurrency cap from the injected dependency,
+    // falling back to the module constant when the dependency is absent or
+    // returns an invalid value.
+    const getMaxConcurrent = dependencies.getMaxConcurrentSubagents;
+    const configuredMax = getMaxConcurrent?.() ?? MAX_CONCURRENT_SUBAGENTS;
+    const maxConcurrent = Number.isFinite(configuredMax) && configuredMax > 0
+      ? Math.floor(configuredMax)
+      : MAX_CONCURRENT_SUBAGENTS;
+    const releaseSlot = reserveSubagentSlot(parentSessionId, maxConcurrent);
     try {
       const profile = resolveSubagentProfile(parent.cwd, request.profile);
       if (!profile) throw new Error(`Unknown or disabled subagent profile: ${request.profile}`);
