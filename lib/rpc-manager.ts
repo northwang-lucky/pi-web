@@ -2,7 +2,7 @@ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { createAgentSessionFromServices, createAgentSessionServices, getAgentDir, initTheme, SessionManager, SettingsManager, Theme } from "@earendil-works/pi-coding-agent";
 import { KeybindingsManager as TuiKeybindingsManager, TUI_KEYBINDINGS } from "@earendil-works/pi-tui";
 import { randomUUID } from "crypto";
-import { existsSync, realpathSync, writeFileSync } from "fs";
+import { existsSync, readFileSync, realpathSync, writeFileSync } from "fs";
 import { resolve } from "path";
 import { validateAgentImages } from "./image-attachments";
 import { invalidateModelsCache } from "./models-cache";
@@ -39,7 +39,8 @@ import {
   SUBAGENT_CONTROL_TOOL_NAMES,
 } from "./subagents";
 import { createSubagentController } from "./subagent-runtime";
-import { isBuiltInSubagentsEnabled } from "./subagent-settings";
+import { registerDispatchRuntime } from "./subagent-dispatch";
+import { getSubagentSettingsPath, isBuiltInSubagentsEnabled } from "./subagent-settings";
 import { resolveShellTools } from "./powershell-settings";
 import { CHAT_ONLY_RESOURCE_LOADER_OPTIONS, contextFilesSystemPrompt } from "./chat-only";
 import {
@@ -1700,6 +1701,46 @@ export function steerSubagent(sessionId: string, message: string) {
 export function abortSubagent(sessionId: string) {
   return SUBAGENT_CONTROLLER.abort(sessionId);
 }
+
+// --- G1: Programmatic subagent dispatch API ---
+
+/** Expose the module-scoped controller for the dispatch runtime. */
+export function getSubagentController() {
+  return SUBAGENT_CONTROLLER;
+}
+
+// Register the dispatch runtime on globalThis so in-process extensions
+// (e.g. workloom adapter) can reach it without resolving the module path.
+// Hot-reload safe: globalThis survives Next.js HMR; re-registration overwrites.
+registerDispatchRuntime({
+  getController: () => SUBAGENT_CONTROLLER,
+  readSettings: () => {
+    try {
+      const settingsPath = getSubagentSettingsPath();
+      const raw = readFileSync(settingsPath, "utf8");
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      return {
+        maxConcurrentSubagents: typeof parsed.maxConcurrentSubagents === "number"
+          ? parsed.maxConcurrentSubagents
+          : undefined,
+      };
+    } catch {
+      return {};
+    }
+  },
+  getParentState: () => ({}),
+  // Resolve the real ExtensionContext from the session registry so the
+  // controller receives a genuine parent context (not a minimal shim).
+  getParentContext: (parentSessionId) => {
+    const wrapper = getRegistry().get(parentSessionId);
+    if (!wrapper) return undefined;
+    const inner = wrapper.inner;
+    return {
+      sessionManager: inner.sessionManager,
+      cwd: inner.sessionManager.getCwd(),
+    };
+  },
+});
 
 function getLocks(): Map<string, Promise<{ session: AgentSessionWrapper; realSessionId: string }>> {
   if (!globalThis.__piStartLocks) globalThis.__piStartLocks = new Map();
