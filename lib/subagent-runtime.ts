@@ -198,13 +198,22 @@ export function createSubagentController(
           : {}),
       });
 
+      // G2: when request.tools is present, bypass parseTools' builtin-only
+      // filter and admit extension tool names resolved against the resource
+      // loader.  When absent, the profile path is bit-identical to today.
       const extensionToolNames = profile.loadExtensions
         ? services.resourceLoader.getExtensions().extensions.flatMap((extension) => [...extension.tools.keys()])
         : [];
-      const activeTools = resolveShellTools(
-        withSubagentExtensionTools(profile.tools, extensionToolNames),
+      const baseTools = request.tools ?? profile.tools;
+      let activeTools = resolveShellTools(
+        withSubagentExtensionTools(baseTools, extensionToolNames),
         settingsManager.getDefaultTools(),
       );
+      // G2: disallowedTools takes precedence — subtract after merge.
+      if (request.disallowedTools) {
+        const disallowed = new Set(request.disallowedTools);
+        activeTools = activeTools.filter((tool) => !disallowed.has(tool));
+      }
 
       const sessionManager = SessionManager.create(parent.cwd, undefined, { parentSession: parent.sessionFile });
       const createdAt = new Date().toISOString();
