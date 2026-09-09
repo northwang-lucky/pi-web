@@ -201,9 +201,29 @@ export function createSubagentController(
       // G2: when request.tools is present, bypass parseTools' builtin-only
       // filter and admit extension tool names resolved against the resource
       // loader.  When absent, the profile path is bit-identical to today.
-      const extensionToolNames = profile.loadExtensions
-        ? services.resourceLoader.getExtensions().extensions.flatMap((extension) => [...extension.tools.keys()])
+      //
+      // G3: when request.extensions/denyExtensions are present, they take
+      // precedence over profile-level extensions/denyExtensions for filtering
+      // which loaded extensions contribute tool names.
+      const allExtensions = profile.loadExtensions
+        ? services.resourceLoader.getExtensions().extensions
         : [];
+      const effectiveExtensions = request.extensions ?? profile.extensions;
+      const effectiveDenyExtensions = request.denyExtensions ?? profile.denyExtensions;
+      const filteredExtensions = allExtensions.filter((ext) => {
+        // Extract the package name from the source string.  npm sources use
+        // the format "npm:<name>@<version>"; non-npm sources are file paths.
+        // For scoped packages (@scope/name@version), strip the trailing
+        // version suffix instead of splitting on "@" which would lose the scope.
+        const rawSource = ext.sourceInfo?.source ?? "";
+        const sourcePkg = rawSource.startsWith("npm:")
+          ? rawSource.replace(/^npm:/, "").replace(/@[^@]*$/, "")
+          : rawSource;
+        if (effectiveExtensions && !effectiveExtensions.includes(sourcePkg)) return false;
+        if (effectiveDenyExtensions && effectiveDenyExtensions.includes(sourcePkg)) return false;
+        return true;
+      });
+      const extensionToolNames = filteredExtensions.flatMap((extension) => [...extension.tools.keys()]);
       const baseTools = request.tools ?? profile.tools;
       let activeTools = resolveShellTools(
         withSubagentExtensionTools(baseTools, extensionToolNames),
@@ -246,7 +266,9 @@ export function createSubagentController(
         model: requestedModel ?? parentModel,
         ...(thinking ? { thinkingLevel: thinking as ThinkingLevel } : {}),
         tools: activeTools,
-        excludeTools: [...SUBAGENT_CONTROL_TOOL_NAMES],
+        // G3: reserved control names stay unconditionally excluded (re-dispatch
+        // guard); caller-supplied excludeTools are appended.
+        excludeTools: [...SUBAGENT_CONTROL_TOOL_NAMES, ...(request.excludeTools ?? [])],
       });
       dependencies.registerSession(inner, {
         ...(promptPlan.exactSystemPrompt !== undefined

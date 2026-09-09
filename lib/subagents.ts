@@ -25,6 +25,10 @@ export interface SubagentProfile {
   tools: string[];
   loadSkills: boolean;
   loadExtensions: boolean;
+  /** G3 per-extension allow list (by package name). */
+  extensions?: string[];
+  /** G3 per-extension deny list (by package name). Deny wins over allow. */
+  denyExtensions?: string[];
   model?: string;
   thinking?: ThinkingLevel;
   maxTurns?: number;
@@ -142,6 +146,17 @@ function booleanValue(value: unknown, fallback: boolean): boolean {
   return typeof value === "boolean" ? value : fallback;
 }
 
+function parseStringArray(value: unknown): string[] | undefined {
+  if (value === undefined || value === null) return undefined;
+  const values = Array.isArray(value)
+    ? value
+    : typeof value === "string"
+      ? value.split(",")
+      : [];
+  const items = values.map((item) => String(item).trim()).filter(Boolean);
+  return items.length > 0 ? [...new Set(items)] : undefined;
+}
+
 function parseTools(value: unknown, fallback: string[]): string[] {
   const values = Array.isArray(value)
     ? value
@@ -172,6 +187,10 @@ function parseProfileFile(filePath: string, scope: SubagentScope): SubagentProfi
       tools: tools.filter((tool) => !disallowedTools.has(tool)),
       loadSkills: booleanValue(data?.load_skills, false),
       loadExtensions: booleanValue(data?.load_extensions, false),
+      // G3: per-extension allow/deny lists from profile front-matter.
+      // Dispatch params (StartSubagentRequest) take precedence over these.
+      ...(parseStringArray(data?.extensions) ? { extensions: parseStringArray(data?.extensions) } : {}),
+      ...(parseStringArray(data?.deny_extensions) ? { denyExtensions: parseStringArray(data?.deny_extensions) } : {}),
       ...(stringValue(data?.model) ? { model: stringValue(data?.model) } : {}),
       ...(thinkingValue && THINKING_LEVELS.has(thinkingValue) ? { thinking: thinkingValue } : {}),
       ...(maxTurnsValue && maxTurnsValue > 0 ? { maxTurns: maxTurnsValue } : {}),
