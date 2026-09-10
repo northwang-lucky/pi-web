@@ -52,7 +52,7 @@ export interface StartSubagentRequest {
   disallowedTools?: string[];
 
   // --- G3: per-extension selection ---
-  /** Allowlist of extension package names. Empty means all loaded extensions. */
+  /** Allowlist of extension package names. An empty array loads no extensions (nothing matches an empty allowlist); omit the field to inherit the profile list. */
   extensions?: string[];
   /** Denylist of extension package names. Deny wins over allow. */
   denyExtensions?: string[];
