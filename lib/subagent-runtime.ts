@@ -107,6 +107,45 @@ function parseSubagentModel(runtime: ModelRuntime, value: string | undefined) {
   throw new Error(`Subagent model is ambiguous; use provider/modelId: ${requested}`);
 }
 
+/**
+ * Resolve the effective thinking level through the three-level fallback
+ * chain: dispatch param → profile → parent session state.
+ *
+ * The parameter names intentionally match the original inline expression so
+ * that source-inspection tests (G4) can verify the fallback chain by regex.
+ */
+function resolveThinkingLevel(
+  request: { thinking?: string },
+  profile: { thinking?: string },
+  parent: HostSession,
+): string | undefined {
+  return request.thinking ?? profile.thinking ?? parent.inner.agent.state?.thinkingLevel;
+}
+
+/**
+ * Resolve the effective model through the three-level fallback chain:
+ * dispatch param → profile → parent session model.  Returns the resolved
+ * model object and its "provider/modelId" string representation.
+ *
+ * The body preserves the `parseSubagentModel(parentModelRuntime, request.model ?? profile.model)`
+ * and `parent.inner.model as ReturnType<...>` patterns so source-inspection
+ * tests (G4) can verify the fallback chain by regex.
+ */
+function resolveEffectiveModel(
+  parentModelRuntime: ModelRuntime,
+  request: { model?: string },
+  profile: { model?: string },
+  parent: HostSession,
+): { resolvedModel: ReturnType<ModelRuntime["getModel"]>; effectiveModel: string } {
+  const requestedModel = parseSubagentModel(parentModelRuntime, request.model ?? profile.model);
+  const parentModel = parent.inner.model as ReturnType<ModelRuntime["getModel"]>;
+  const resolvedModel = requestedModel ?? parentModel;
+  const effectiveModel = resolvedModel
+    ? `${resolvedModel.provider}/${resolvedModel.id}`
+    : "";
+  return { resolvedModel, effectiveModel };
+}
+
 function parentContextText(parent: HostSession): string {
   const messages = parent.inner.sessionManager.buildSessionContext().messages;
   const serialized = JSON.stringify(messages);
@@ -163,7 +202,7 @@ export function createSubagentController(
         throw new Error("max_turns must be a non-negative number");
       }
       const turnLimit = maxTurns && maxTurns > 0 ? Math.floor(maxTurns) : undefined;
-      const thinking = request.thinking ?? profile.thinking ?? parent.inner.agent.state?.thinkingLevel;
+      const thinking = resolveThinkingLevel(request, profile, parent);
       if (thinking && !THINKING_LEVELS.has(thinking as ThinkingLevel)) {
         throw new Error(`Invalid subagent thinking level: ${thinking}`);
       }
@@ -172,15 +211,9 @@ export function createSubagentController(
       const parentModelRuntime = (parent.inner as unknown as { modelRuntime: ModelRuntime }).modelRuntime;
       // G4: resolve the model early so the effective value is available for both
       // the resourceSnapshot (audit trail) and the initialRun lifecycle event.
-      const requestedModel = parseSubagentModel(parentModelRuntime, request.model ?? profile.model);
-      const parentModel = parent.inner.model as ReturnType<ModelRuntime["getModel"]>;
-      // G4: resolve the authoritative effective model from the three-level
-      // fallback (dispatch param → profile → parent session).  The local
-      // variable narrows the union so TypeScript can access provider/id.
-      const resolvedModel = requestedModel ?? parentModel;
-      const effectiveModel = resolvedModel
-        ? `${resolvedModel.provider}/${resolvedModel.id}`
-        : "";
+      const { resolvedModel, effectiveModel } = resolveEffectiveModel(
+        parentModelRuntime, request, profile, parent,
+      );
       const settingsManager = SettingsManager.create(parent.cwd, agentDir);
       const inheritedParentContext = inheritContext
         ? `The following is the active conversation context from the parent session. Use it only as background for the delegated task:\n${parentContextText(parent)}`
@@ -314,7 +347,7 @@ export function createSubagentController(
       const { session: inner } = await createAgentSessionFromServices({
         services,
         sessionManager,
-        model: requestedModel ?? parentModel,
+        model: resolvedModel,
         ...(thinking ? { thinkingLevel: thinking as ThinkingLevel } : {}),
         tools: activeTools,
         // G3: reserved control names stay unconditionally excluded (re-dispatch
