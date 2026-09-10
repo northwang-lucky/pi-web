@@ -94,13 +94,20 @@ export function extensionFilterKey(source: string): string {
   return basename(source).replace(/\.[^.]+$/, "");
 }
 
-/** Filter an extension list against allow/deny sets using extensionFilterKey. */
-export function filterExtensionsBySource<T extends { sourceInfo?: { source?: string } }>(
+/** Filter an extension list against allow/deny sets using extensionFilterKey.
+ *  For npm sources the key is derived from the package name; for file-path
+ *  and auto-discovered sources the key is the basename without extension,
+ *  extracted from sourceInfo.path (sourceInfo.source is "auto" for all
+ *  auto-discovered extensions and cannot distinguish them). */
+export function filterExtensionsBySource<T extends { sourceInfo?: { source?: string; path?: string } }>(
   extensions: T[],
   { allow, deny }: { allow?: string[]; deny?: string[] },
 ): T[] {
   return extensions.filter((ext) => {
-    const key = extensionFilterKey(ext.sourceInfo?.source ?? "");
+    const source = ext.sourceInfo?.source ?? "";
+    const key = source.startsWith("npm:")
+      ? extensionFilterKey(source)
+      : extensionFilterKey(ext.sourceInfo?.path ?? source);
     if (allow && !allow.includes(key)) return false;
     if (deny && deny.includes(key)) return false;
     return true;
