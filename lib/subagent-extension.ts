@@ -30,17 +30,40 @@ export interface SubagentToolDetails {
 }
 
 export interface StartSubagentRequest {
+  // --- Core dispatch parameters ---
   parentContext: ExtensionContext;
   parentToolCallId: string;
   profile: string;
   task: string;
-  inputFiles?: string[];
   description: string;
+  inputFiles?: string[];
   runInBackground?: boolean;
+
+  // --- G4: lifecycle parameters ---
   model?: string;
   thinking?: string;
   maxTurns?: number;
   inheritContext?: boolean;
+
+  // --- G2: per-dispatch tool filtering ---
+  /** Allowlist of tool names for this dispatch. Extension tool names are admitted. */
+  tools?: string[];
+  /** Blacklist of tool names. Takes precedence over `tools`. */
+  disallowedTools?: string[];
+
+  // --- G3: per-extension selection ---
+  /** Allowlist of extension package names. Empty means all loaded extensions. */
+  extensions?: string[];
+  /** Denylist of extension package names. Deny wins over allow. */
+  denyExtensions?: string[];
+  /** Additional tool names to exclude. Reserved control names are always excluded. */
+  excludeTools?: string[];
+
+  // --- G6: session lifecycle ---
+  /** When true the child session is ephemeral (in-memory only, no .jsonl file). */
+  ephemeral?: boolean;
+
+  // --- Event wiring ---
   signal?: AbortSignal;
   onUpdate?: (run: SubagentRunInfo) => void;
 }

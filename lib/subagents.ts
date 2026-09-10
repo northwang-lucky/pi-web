@@ -18,18 +18,33 @@ export type SubagentScope = "builtin" | "global" | "workspace" | "project";
 export type SubagentWritableScope = Extract<SubagentScope, "global" | "project">;
 
 export interface SubagentProfile {
+  // --- Identity ---
   name: string;
   displayName: string;
   description: string;
   systemPrompt: string;
+
+  // --- Resource loading ---
   tools: string[];
   loadSkills: boolean;
   loadExtensions: boolean;
+
+  // --- G3: per-extension selection ---
+  /** Allowlist of extension package names (dispatch params take precedence). */
+  extensions?: string[];
+  /** Denylist of extension package names (deny wins over allow). */
+  denyExtensions?: string[];
+
+  // --- G4: model and thinking ---
   model?: string;
   thinking?: ThinkingLevel;
+
+  // --- Execution limits ---
   maxTurns?: number;
   inheritContext: boolean;
   runInBackground: boolean;
+
+  // --- Scope ---
   enabled: boolean;
   scope: SubagentScope;
   filePath?: string;
@@ -54,6 +69,10 @@ export interface SubagentResourceSnapshot {
   tools: string[];
   loadSkills: boolean;
   loadExtensions: boolean;
+  /** G4: authoritative effective model after three-level fallback resolution. */
+  model?: string;
+  /** G4: authoritative effective thinking level after three-level fallback resolution. */
+  thinking?: string | null;
 }
 
 export interface SubagentSessionResources {
@@ -85,6 +104,10 @@ export interface SubagentRunInfo {
   completedAt?: string;
   result?: string;
   error?: string;
+  /** G4: authoritative effective model after three-level fallback resolution. */
+  model?: string;
+  /** G4: authoritative effective thinking level after three-level fallback resolution. */
+  thinking?: string | null;
 }
 
 const DEFAULT_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls"];
@@ -142,6 +165,17 @@ function booleanValue(value: unknown, fallback: boolean): boolean {
   return typeof value === "boolean" ? value : fallback;
 }
 
+function parseStringArray(value: unknown): string[] | undefined {
+  if (value === undefined || value === null) return undefined;
+  const values = Array.isArray(value)
+    ? value
+    : typeof value === "string"
+      ? value.split(",")
+      : [];
+  const items = values.map((item) => String(item).trim()).filter(Boolean);
+  return items.length > 0 ? [...new Set(items)] : undefined;
+}
+
 function parseTools(value: unknown, fallback: string[]): string[] {
   const values = Array.isArray(value)
     ? value
@@ -172,6 +206,10 @@ function parseProfileFile(filePath: string, scope: SubagentScope): SubagentProfi
       tools: tools.filter((tool) => !disallowedTools.has(tool)),
       loadSkills: booleanValue(data?.load_skills, false),
       loadExtensions: booleanValue(data?.load_extensions, false),
+      // G3: per-extension allow/deny lists from profile front-matter.
+      // Dispatch params (StartSubagentRequest) take precedence over these.
+      ...(parseStringArray(data?.extensions) ? { extensions: parseStringArray(data?.extensions) } : {}),
+      ...(parseStringArray(data?.deny_extensions) ? { denyExtensions: parseStringArray(data?.deny_extensions) } : {}),
       ...(stringValue(data?.model) ? { model: stringValue(data?.model) } : {}),
       ...(thinkingValue && THINKING_LEVELS.has(thinkingValue) ? { thinking: thinkingValue } : {}),
       ...(maxTurnsValue && maxTurnsValue > 0 ? { maxTurns: maxTurnsValue } : {}),

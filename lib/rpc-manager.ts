@@ -39,7 +39,8 @@ import {
   SUBAGENT_CONTROL_TOOL_NAMES,
 } from "./subagents";
 import { createSubagentController } from "./subagent-runtime";
-import { isBuiltInSubagentsEnabled } from "./subagent-settings";
+import { isBuiltInSubagentsEnabled, readSubagentSettings } from "./subagent-settings";
+import { registerDispatchRuntime } from "./subagent-dispatch";
 import { resolveShellTools } from "./powershell-settings";
 import { CHAT_ONLY_RESOURCE_LOADER_OPTIONS, contextFilesSystemPrompt } from "./chat-only";
 import {
@@ -1687,6 +1688,15 @@ const SUBAGENT_CONTROLLER = createSubagentController({
   resolveSessionPath,
   invalidateSessionList: invalidateSessionListCache,
   isBuiltInSubagentsEnabled,
+  // G5: production source for the configurable concurrency cap. Malformed
+  // settings fail closed: undefined lets the runtime fall back to its default.
+  getMaxConcurrentSubagents: () => {
+    try {
+      return readSubagentSettings().maxConcurrentSubagents;
+    } catch {
+      return undefined;
+    }
+  },
 });
 
 export function getSubagentRun(sessionId: string) {
@@ -1700,6 +1710,31 @@ export function steerSubagent(sessionId: string, message: string) {
 export function abortSubagent(sessionId: string) {
   return SUBAGENT_CONTROLLER.abort(sessionId);
 }
+
+// --- G1: Programmatic subagent dispatch API ---
+
+/** Expose the module-scoped controller for the dispatch runtime. */
+export function getSubagentController() {
+  return SUBAGENT_CONTROLLER;
+}
+
+// Register the dispatch runtime on globalThis so in-process extensions
+// (e.g. workloom adapter) can reach it without resolving the module path.
+// Hot-reload safe: globalThis survives Next.js HMR; re-registration overwrites.
+registerDispatchRuntime({
+  getController: () => SUBAGENT_CONTROLLER,
+  readSettings: () => {
+    try {
+      return readSubagentSettings();
+    } catch {
+      return {};
+    }
+  },
+  getParentState: () => ({
+    model: undefined,
+    thinking: undefined,
+  }),
+});
 
 function getLocks(): Map<string, Promise<{ session: AgentSessionWrapper; realSessionId: string }>> {
   if (!globalThis.__piStartLocks) globalThis.__piStartLocks = new Map();
