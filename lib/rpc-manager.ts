@@ -1734,6 +1734,22 @@ registerDispatchRuntime({
     model: undefined,
     thinking: undefined,
   }),
+  // Resolve the real parent context from the session registry so the
+  // dispatch runtime receives a genuine parent (not a minimal shim).
+  // The runtime (subagent-runtime.ts) only reads
+  // parentContext.sessionManager.getSessionId(); all other parent data
+  // comes from the HostSession retrieved via dependencies.getSession().
+  // We supply sessionManager and cwd — the minimum fields that satisfy
+  // the ExtensionContext contract — without copying all ~15 fields.
+  getParentContext: (parentSessionId) => {
+    const wrapper = getRegistry().get(parentSessionId);
+    if (!wrapper) return undefined;
+    const inner = wrapper.inner;
+    return {
+      sessionManager: inner.sessionManager,
+      cwd: inner.sessionManager.getCwd(),
+    };
+  },
 });
 
 function getLocks(): Map<string, Promise<{ session: AgentSessionWrapper; realSessionId: string }>> {
