@@ -1,3 +1,4 @@
+import { basename } from "node:path";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import {
   createAgentSessionFromServices,
@@ -78,6 +79,33 @@ type StoredSubagentExecution = {
 const MAX_CONCURRENT_SUBAGENTS = 4;
 const SUBAGENT_CONTEXT_LIMIT = 50_000;
 const THINKING_LEVELS = new Set<ThinkingLevel>(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+
+// ---------------------------------------------------------------------------
+// Extension filter helpers (exported for direct behavior testing)
+// ---------------------------------------------------------------------------
+
+/** Derive a stable match key from an extension source string. npm sources
+ *  yield the package name (stripping prefix and version); file-path sources
+ *  yield the basename without extension. */
+export function extensionFilterKey(source: string): string {
+  if (source.startsWith("npm:")) {
+    return source.replace(/^npm:/, "").replace(/@[^@]*$/, "");
+  }
+  return basename(source).replace(/\.[^.]+$/, "");
+}
+
+/** Filter an extension list against allow/deny sets using extensionFilterKey. */
+export function filterExtensionsBySource<T extends { sourceInfo?: { source?: string } }>(
+  extensions: T[],
+  { allow, deny }: { allow?: string[]; deny?: string[] },
+): T[] {
+  return extensions.filter((ext) => {
+    const key = extensionFilterKey(ext.sourceInfo?.source ?? "");
+    if (allow && !allow.includes(key)) return false;
+    if (deny && deny.includes(key)) return false;
+    return true;
+  });
+}
 
 /** Typed adapter — the registry stores `unknown`; this narrows to the local type. */
 function getSubagentRuns(): Map<string, StoredSubagentExecution> {
@@ -271,15 +299,10 @@ export function createSubagentController(
       });
       // G3: filter extensions using the pipeline's effective allow/deny lists.
       // The pipeline resolves which lists apply; the runtime applies them
-      // against the resource loader's loaded extensions.
-      const filteredExtensions = allExtensions.filter((ext) => {
-        const rawSource = ext.sourceInfo?.source ?? "";
-        const sourcePkg = rawSource.startsWith("npm:")
-          ? rawSource.replace(/^npm:/, "").replace(/@[^@]*$/, "")
-          : rawSource;
-        if (pipelinePlan.effectiveExtensions && !pipelinePlan.effectiveExtensions.includes(sourcePkg)) return false;
-        if (pipelinePlan.effectiveDenyExtensions && pipelinePlan.effectiveDenyExtensions.includes(sourcePkg)) return false;
-        return true;
+      // against the resource loader's loaded extensions via filterExtensionsBySource.
+      const filteredExtensions = filterExtensionsBySource(allExtensions, {
+        allow: pipelinePlan.effectiveExtensions,
+        deny: pipelinePlan.effectiveDenyExtensions,
       });
       const extensionToolNames = filteredExtensions.flatMap((extension) => [...extension.tools.keys()]);
       // G2: merge base tools with extension names, then apply shell-specific
