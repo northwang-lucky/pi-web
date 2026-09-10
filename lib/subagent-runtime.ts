@@ -34,6 +34,10 @@ import { appendSubagentInputFiles, loadSubagentInputFiles } from "./subagent-inp
 import { projectTrustReloadOptions } from "./project-trust";
 import { resolveShellTools } from "./powershell-settings";
 import { isBuiltInSubagentsEnabled } from "./subagent-settings";
+import {
+  getSubagentRuns as getRawSubagentRuns,
+  getSubagentStartingCounts,
+} from "./subagent-state";
 
 interface HostSession {
   readonly inner: AgentSessionLike;
@@ -71,23 +75,13 @@ type StoredSubagentExecution = {
   abortRequested: boolean;
 };
 
-declare global {
-  var __piSubagentRuns: Map<string, StoredSubagentExecution> | undefined;
-  var __piSubagentStartingCounts: Map<string, number> | undefined;
-}
-
 const MAX_CONCURRENT_SUBAGENTS = 4;
 const SUBAGENT_CONTEXT_LIMIT = 50_000;
 const THINKING_LEVELS = new Set<ThinkingLevel>(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 
+/** Typed adapter — the registry stores `unknown`; this narrows to the local type. */
 function getSubagentRuns(): Map<string, StoredSubagentExecution> {
-  if (!globalThis.__piSubagentRuns) globalThis.__piSubagentRuns = new Map();
-  return globalThis.__piSubagentRuns;
-}
-
-function getSubagentStartingCounts(): Map<string, number> {
-  if (!globalThis.__piSubagentStartingCounts) globalThis.__piSubagentStartingCounts = new Map();
-  return globalThis.__piSubagentStartingCounts;
+  return getRawSubagentRuns() as Map<string, StoredSubagentExecution>;
 }
 
 function parseSubagentModel(runtime: ModelRuntime, value: string | undefined) {

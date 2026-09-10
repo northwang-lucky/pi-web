@@ -22,6 +22,7 @@
 import { randomUUID } from "node:crypto";
 import type { SubagentController } from "./subagent-runtime";
 import type { SubagentRunInfo } from "./subagents";
+import { getActiveDispatches } from "./subagent-state";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -185,19 +186,6 @@ export function resolveSubagentResources(params: {
     effectiveThinking,
     ephemeral,
   };
-}
-
-// ---------------------------------------------------------------------------
-// Active-dispatch tracking (for concurrency gating)
-// ---------------------------------------------------------------------------
-
-declare global {
-  var __piDispatchActive: Map<string, string> | undefined;
-}
-
-function getActiveDispatches(): Map<string, string> {
-  if (!globalThis.__piDispatchActive) globalThis.__piDispatchActive = new Map();
-  return globalThis.__piDispatchActive;
 }
 
 // ---------------------------------------------------------------------------
