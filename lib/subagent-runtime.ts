@@ -329,6 +329,9 @@ export function createSubagentController(
         // of the dispatch input parameters.
         model: effectiveModel,
         thinking: thinking ?? null,
+        // G2: carry the resolved active tool set so dispatch events can surface
+        // the truthful effectiveTools without re-deriving the allow/deny pipeline.
+        activeTools: [...activeTools],
       };
 
       let turnCount = 0;

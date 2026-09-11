@@ -131,11 +131,21 @@ export function createDispatchRuntime(deps: DispatchRuntimeDeps) {
     const controller = deps.getController();
     const parentState = deps.getParentState();
 
-    // Wire AbortSignal → abort linkage.
+    // Wire AbortSignal → abort linkage.  The listener is detached on every
+    // terminal path (settle, start-error, or signal-already-aborted) to avoid
+    // leaking the handler when the signal outlives the dispatch.
     let signalAbort: (() => void) | null = null;
+    let onAbort: (() => void) | null = null;
     if (params.signal) {
-      const onAbort = () => { signalAbort?.(); };
+      onAbort = () => { signalAbort?.(); };
       params.signal.addEventListener("abort", onAbort, { once: true });
+    }
+
+    function detachSignal() {
+      if (params.signal && onAbort) {
+        params.signal.removeEventListener("abort", onAbort);
+        onAbort = null;
+      }
     }
 
     // Build the parent context for the controller.  Production provides a real
@@ -157,7 +167,7 @@ export function createDispatchRuntime(deps: DispatchRuntimeDeps) {
     const request = {
       parentContext,
       parentToolCallId: dispatchId,
-      profile: params.profile ?? "default",
+      profile: params.profile ?? "general-purpose",
       task: params.task,
       description: params.description,
       runInBackground: params.runInBackground,
@@ -177,8 +187,15 @@ export function createDispatchRuntime(deps: DispatchRuntimeDeps) {
       _getParentState: () => parentState,
     } as unknown as Parameters<SubagentController["extensionRuntime"]["start"]>[0];
 
-    const { run: childRun, completion: rawCompletion } =
-      await controller.extensionRuntime.start(request);
+    let childRun: SubagentRunInfo;
+    let rawCompletion: Promise<SubagentRunInfo>;
+    try {
+      ({ run: childRun, completion: rawCompletion } =
+        await controller.extensionRuntime.start(request));
+    } catch (err) {
+      detachSignal();
+      throw err;
+    }
 
     // Expose the child session id on the request so callers that recorded
     // the request (e.g. test fakes) can correlate it with the run.
@@ -195,17 +212,22 @@ export function createDispatchRuntime(deps: DispatchRuntimeDeps) {
       resolveCompletion = resolve;
     });
 
-    function settle(phase: "completed" | "aborted", run: SubagentRunInfo, error?: string) {
-      if (settled) return;
-      settled = true;
-      active.delete(dispatchId);
-
+    /** Build a SubagentDispatchEvent from a terminal run. */
+    function buildEvent(
+      phase: "completed" | "aborted",
+      run: SubagentRunInfo,
+      error?: string,
+    ): SubagentDispatchEvent {
       // The controller resolves the three-level fallback (dispatch param →
       // profile → parent session) and surfaces the authoritative effective
       // values on the run.  We read them directly — no transitional fallback
       // needed because B4 guarantees model/thinking are always populated.
-      const runExtra = run as unknown as { model?: string; thinking?: string | null; tools?: string[] };
-      resolveCompletion({
+      //
+      // For effectiveTools: prefer activeTools (populated by the production
+      // runtime); fall back to the transitional .tools field that the frozen
+      // test's fake controller carries.
+      const runExtra = run;
+      return {
         phase,
         dispatchId,
         childSessionId: run.sessionId,
@@ -213,8 +235,22 @@ export function createDispatchRuntime(deps: DispatchRuntimeDeps) {
         effectiveThinking: runExtra.thinking ?? null,
         result: run.result,
         error: error ?? run.error,
-        effectiveTools: runExtra.tools,
-      });
+        effectiveTools: runExtra.activeTools ?? runExtra.tools,
+      };
+    }
+
+    function settle(phase: "completed" | "aborted", run: SubagentRunInfo, error?: string) {
+      if (settled) return;
+      settled = true;
+      active.delete(dispatchId);
+      detachSignal();
+
+      const event = buildEvent(phase, run, error);
+      resolveCompletion(event);
+
+      // Fire-and-forget: forward terminal event to the dispatch caller.
+      // Subscriber exceptions must never break dispatch completion.
+      try { params.onUpdate?.(event); } catch { /* intentionally ignored */ }
     }
 
     // When the controller signals completion, settle as "completed".
@@ -235,6 +271,24 @@ export function createDispatchRuntime(deps: DispatchRuntimeDeps) {
     if (params.signal?.aborted) {
       signalAbort();
     }
+
+    // Emit the "started" lifecycle event.  The three-state contract:
+    //   - "started" fires exactly once after the controller returns a valid run,
+    //     carrying the authoritative effective model/thinking/tools.
+    //   - "completed" or "aborted" fires exactly once when the child settles.
+    //   - Subscriber exceptions never break dispatch (try/catch at every call).
+    // This is fire-and-forget: the dispatch completion promise is independent
+    // of whether onUpdate subscribers succeed.
+    try {
+      params.onUpdate?.({
+        phase: "started",
+        dispatchId,
+        childSessionId: childRun.sessionId,
+        effectiveModel: childRun.model ?? "",
+        effectiveThinking: childRun.thinking ?? null,
+        effectiveTools: childRun.activeTools ?? childRun.tools,
+      });
+    } catch { /* intentionally ignored */ }
 
     return {
       dispatchId,
