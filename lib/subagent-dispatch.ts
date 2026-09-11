@@ -12,12 +12,12 @@
  *      and is reachable from in-process extensions that cannot resolve the module path.
  *
  * Unified resolution pipeline:
- *   Tools, extensions, model, and thinking are resolved through a single
- *   typed intermediate plan (`ResolvedSubagentResources`) rather than being
- *   scattered across the runtime and extension modules.  This keeps the
- *   resolution logic testable in isolation and makes the dispatch contract
- *   explicit: callers pass params + profile + parent state, and the pipeline
- *   produces the final effective values.
+ *   The `resolveSubagentResources` function produces a typed intermediate plan
+ *   (`ResolvedSubagentResources`) from dispatch params, profile defaults, and
+ *   parent session state.  This plan is consumed by the runtime module
+ *   (subagent-runtime.ts) for real execution.  The dispatch module constructs
+ *   the controller request directly from params; the plan is available for
+ *   testable isolated resolution but is not read by the dispatch path itself.
  */
 import { randomUUID } from "node:crypto";
 import type { SubagentController } from "./subagent-runtime";
@@ -217,11 +217,13 @@ export function createDispatchRuntime(deps: DispatchRuntimeDeps) {
     const controller = deps.getController();
     const parentState = deps.getParentState();
 
-    // Wire AbortSignal → abort linkage.
+    // Wire AbortSignal → abort linkage.  The listener is removed on every
+    // terminal path so it does not outlive the dispatch.
     let signalAbort: (() => void) | null = null;
+    let signalListener: (() => void) | null = null;
     if (params.signal) {
-      const onAbort = () => { signalAbort?.(); };
-      params.signal.addEventListener("abort", onAbort, { once: true });
+      signalListener = () => { signalAbort?.(); };
+      params.signal.addEventListener("abort", signalListener, { once: true });
     }
 
     // Build the parent context for the controller.  Production provides a real
@@ -243,7 +245,7 @@ export function createDispatchRuntime(deps: DispatchRuntimeDeps) {
     const request = {
       parentContext,
       parentToolCallId: dispatchId,
-      profile: params.profile ?? "default",
+      profile: params.profile ?? "general-purpose",
       task: params.task,
       description: params.description,
       runInBackground: params.runInBackground,
@@ -265,8 +267,20 @@ export function createDispatchRuntime(deps: DispatchRuntimeDeps) {
       _getParentState: () => parentState,
     } as unknown as Parameters<SubagentController["extensionRuntime"]["start"]>[0];
 
-    const { run: childRun, completion: rawCompletion } =
-      await controller.extensionRuntime.start(request);
+    let childRun: SubagentRunInfo;
+    let rawCompletion: Promise<SubagentRunInfo>;
+    try {
+      ({ run: childRun, completion: rawCompletion } =
+        await controller.extensionRuntime.start(request));
+    } catch (err) {
+      // If start() throws, detach the signal listener so it does not outlive
+      // the failed dispatch, then re-throw.
+      if (signalListener && params.signal) {
+        params.signal.removeEventListener("abort", signalListener);
+        signalListener = null;
+      }
+      throw err;
+    }
 
     // Expose the child session id on the request so callers that recorded
     // the request (e.g. test fakes) can correlate it with the run.
@@ -274,6 +288,23 @@ export function createDispatchRuntime(deps: DispatchRuntimeDeps) {
 
     // Register this dispatch as active.
     active.set(dispatchId, parentSessionId);
+
+    // Emit the "started" phase with the run's authoritative effective values.
+    // SubagentRunInfo.activeTools/model/thinking are typed fields populated by
+    // the runtime — no cast needed.  For effectiveTools, prefer activeTools
+    // (populated by the production runtime); fall back to the transitional
+    // .tools field that the frozen test's fake controller carries.
+    // Callback exceptions must never break the dispatch.
+    try {
+      params.onUpdate?.({
+        phase: "started",
+        dispatchId,
+        childSessionId: childRun.sessionId,
+        effectiveModel: childRun.model ?? "",
+        effectiveThinking: childRun.thinking ?? null,
+        effectiveTools: childRun.activeTools ?? childRun.tools,
+      });
+    } catch { /* best-effort */ }
 
     // Controllable completion: can be resolved from the abort path or from
     // the raw controller completion, whichever fires first.
@@ -288,21 +319,32 @@ export function createDispatchRuntime(deps: DispatchRuntimeDeps) {
       settled = true;
       active.delete(dispatchId);
 
+      // Detach the AbortSignal listener so it does not outlive the dispatch.
+      if (signalListener && params.signal) {
+        params.signal.removeEventListener("abort", signalListener);
+        signalListener = null;
+      }
+
       // The controller resolves the three-level fallback (dispatch param →
       // profile → parent session) and surfaces the authoritative effective
-      // values on the run.  We read them directly — no transitional fallback
-      // needed because B4 guarantees model/thinking are always populated.
-      const runExtra = run as unknown as { model?: string; thinking?: string | null; tools?: string[] };
-      resolveCompletion({
+      // values on the run.  SubagentRunInfo.activeTools/model/thinking are
+      // typed fields — read directly, no cast needed.  For effectiveTools,
+      // prefer activeTools; fall back to the transitional .tools field.
+      const event: SubagentDispatchEvent = {
         phase,
         dispatchId,
         childSessionId: run.sessionId,
-        effectiveModel: runExtra.model ?? "",
-        effectiveThinking: runExtra.thinking ?? null,
+        effectiveModel: run.model ?? "",
+        effectiveThinking: run.thinking ?? null,
         result: run.result,
         error: error ?? run.error,
-        effectiveTools: runExtra.tools,
-      });
+        effectiveTools: run.activeTools ?? run.tools,
+      };
+      resolveCompletion(event);
+
+      // Notify the dispatcher of the terminal phase.  Callback exceptions
+      // must never break the dispatch.
+      try { params.onUpdate?.(event); } catch { /* best-effort */ }
     }
 
     // When the controller signals completion, settle as "completed".
