@@ -101,10 +101,10 @@ export interface DispatchRuntimeDeps {
 // ---------------------------------------------------------------------------
 // Unified resolution pipeline
 //
-// Instead of scattering tool/extension resolution across the runtime module
-// (lines 201-252 in branch-1) and the extension module, this single function
-// produces a typed intermediate plan.  The dispatch module reads the plan;
-// the runtime consumes it.  Both are independently testable.
+// Consolidates tool/extension resolution into a single pipeline that produces
+// a typed intermediate plan.  The runtime module consumes this plan when
+// building the active tool set; the dispatch module only forwards it.  Both
+// consumers are independently testable against the same resolution logic.
 // ---------------------------------------------------------------------------
 
 /** Reserved control tool names that are always excluded from child sessions. */
