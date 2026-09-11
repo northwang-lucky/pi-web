@@ -262,23 +262,10 @@ export function createDispatchRuntime(deps: DispatchRuntimeDeps) {
       },
     );
 
-    signalAbort = () => {
-      void controller.abort(childRun.sessionId);
-      settle("aborted", childRun);
-    };
-
-    // If the parent signal was already aborted before wiring, abort now.
-    if (params.signal?.aborted) {
-      signalAbort();
-    }
-
-    // Emit the "started" lifecycle event.  The three-state contract:
-    //   - "started" fires exactly once after the controller returns a valid run,
-    //     carrying the authoritative effective model/thinking/tools.
-    //   - "completed" or "aborted" fires exactly once when the child settles.
-    //   - Subscriber exceptions never break dispatch (try/catch at every call).
-    // This is fire-and-forget: the dispatch completion promise is independent
-    // of whether onUpdate subscribers succeed.
+    // Emit the "started" lifecycle event before the pre-aborted guard so that
+    // a signal that was already aborted when dispatch was entered still receives
+    // started → aborted in order (consistent with branch 2 semantics).
+    // Subscriber exceptions never break dispatch (try/catch).
     try {
       params.onUpdate?.({
         phase: "started",
@@ -289,6 +276,16 @@ export function createDispatchRuntime(deps: DispatchRuntimeDeps) {
         effectiveTools: childRun.activeTools ?? childRun.tools,
       });
     } catch { /* intentionally ignored */ }
+
+    signalAbort = () => {
+      void controller.abort(childRun.sessionId);
+      settle("aborted", childRun);
+    };
+
+    // If the parent signal was already aborted before wiring, abort now.
+    if (params.signal?.aborted) {
+      signalAbort();
+    }
 
     return {
       dispatchId,
