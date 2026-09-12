@@ -32,6 +32,7 @@ import {
   streamReducer,
   type ClientAssistantMessageEvent,
 } from "@/lib/streaming-message";
+import { shouldReconcileIdleSession, type IdleReconciliationTrigger } from "@/lib/wake-visibility";
 
 export interface SessionData {
   sessionId: string;
@@ -356,6 +357,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const modelSwitchPendingRef = useRef(false);
   const draftKeyAliasesRef = useRef(new Map<string, string>());
   const sessionHookMountedRef = useRef(true);
+  const lastIdleReconcileAtRef = useRef<number | null>(null);
+  const previousSnapshotRunningRef = useRef(false);
 
   sessionPropIdRef.current = session?.id ?? null;
   sessionRunningRef.current = Boolean(sessionRunning);
@@ -721,6 +724,30 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     eventConnectionRef.current!.ensureConnected(sid)
   ), []);
 
+  // Silent content pull for an idle page: a notification-woken run (no
+  // wrapper-level prompt_done) can finish entirely while this page's SSE is
+  // closed and it never learned the session was running. The decision of
+  // whether a trigger justifies the fetch lives in the pure wake-visibility
+  // seam; the fetch itself is the regular full-session reload, so it is
+  // idempotent and also refreshes stats.
+  const reconcileIdleSessionContent = useCallback((trigger: IdleReconciliationTrigger) => {
+    const sid = sessionIdRef.current;
+    if (!sid) return;
+    const now = Date.now();
+    if (!shouldReconcileIdleSession({
+      trigger,
+      localRunActive: agentRunningRef.current,
+      bashRunning: bashRunningRef.current,
+      streamingActive: streamState.isStreaming,
+      snapshotRunning: sessionRunningRef.current,
+      msSinceLastReconciliation: lastIdleReconcileAtRef.current === null
+        ? null
+        : now - lastIdleReconcileAtRef.current,
+    })) return;
+    lastIdleReconcileAtRef.current = now;
+    void loadSession(sid);
+  }, [loadSession, streamState.isStreaming]);
+
   const maintainEventsConnected = useCallback((sid: string) => {
     eventConnectionRef.current!.maintain(sid);
   }, []);
@@ -1064,6 +1091,32 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   useEffect(() => {
     agentRunningRef.current = agentRunning;
   }, [agentRunning]);
+
+  // The sidebar running snapshot transitioning to gone means a run finished
+  // (often a wake round) that this page may have never attached to; pull the
+  // session file so off-screen content shows up without a manual refresh.
+  useEffect(() => {
+    const wasRunning = previousSnapshotRunningRef.current;
+    previousSnapshotRunningRef.current = Boolean(sessionRunning);
+    if (wasRunning && !sessionRunning) reconcileIdleSessionContent("running_snapshot_gone");
+  }, [sessionRunning, reconcileIdleSessionContent]);
+
+  // Missed wake-round content lands silently in the session file while this
+  // page is idle with its SSE closed. Unlike the reconcile effect above —
+  // which is gated on agentRunning — these hard signals fire for a page that
+  // never knew about the run at all.
+  useEffect(() => {
+    const onIdleReconcileVisibility = () => {
+      if (document.visibilityState === "visible") reconcileIdleSessionContent("tab_visible");
+    };
+    const onIdleReconcileOnline = () => reconcileIdleSessionContent("network_online");
+    document.addEventListener("visibilitychange", onIdleReconcileVisibility);
+    window.addEventListener("online", onIdleReconcileOnline);
+    return () => {
+      document.removeEventListener("visibilitychange", onIdleReconcileVisibility);
+      window.removeEventListener("online", onIdleReconcileOnline);
+    };
+  }, [reconcileIdleSessionContent]);
 
   const handleAgentEvent = useCallback((event: AgentEvent) => {
     switch (event.type) {

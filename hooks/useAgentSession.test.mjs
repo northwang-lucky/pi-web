@@ -533,3 +533,41 @@ test("keeps a detached viewport in place when streaming completes", () => {
   assert.doesNotMatch(scrollEffectSource, /\|\|/);
   assert.match(source, /addEventListener\("scroll", handleScrollPositionChange/);
 });
+
+test("an idle page pulls wake-round content on hard signals and snapshot transitions", () => {
+  // The decision table lives in the pure seam; the hook only wires triggers.
+  assert.match(source, /import \{\s*shouldReconcileIdleSession,\s*type IdleReconciliationTrigger,?\s*\} from "@\/lib\/wake-visibility";/);
+
+  const idleReconcileSource = source.slice(
+    source.indexOf("const reconcileIdleSessionContent = useCallback"),
+    source.indexOf("const maintainEventsConnected"),
+  );
+  // Every decision input is forwarded to the pure seam.
+  assert.match(idleReconcileSource, /shouldReconcileIdleSession\(\{[\s\S]*?trigger,[\s\S]*?localRunActive: agentRunningRef\.current,[\s\S]*?bashRunning: bashRunningRef\.current,[\s\S]*?streamingActive:[\s\S]*?snapshotRunning: sessionRunningRef\.current,[\s\S]*?msSinceLastReconciliation:[\s\S]*?\}\)/);
+  assert.match(idleReconcileSource, /void loadSession\(sid\)/);
+  assert.match(idleReconcileSource, /lastIdleReconcileAtRef\.current = now/);
+
+  // Tab-visible / online listeners run regardless of the local running state —
+  // the previous reconciliation effect is gated on agentRunning and never
+  // fires for a page that missed the wake round entirely.
+  const idleEffectSource = source.slice(
+    source.indexOf("// Missed wake-round content lands silently"),
+    source.indexOf("useEffect(() => {\n    if (!agentRunning) setPromptAnchorActive(false);"),
+  );
+  assert.match(idleEffectSource, /document\.addEventListener\("visibilitychange", onIdleReconcileVisibility\)/);
+  assert.match(idleEffectSource, /window\.addEventListener\("online", onIdleReconcileOnline\)/);
+  assert.match(idleEffectSource, /reconcileIdleSessionContent\("tab_visible"\)/);
+  assert.match(idleEffectSource, /reconcileIdleSessionContent\("network_online"\)/);
+  assert.match(idleEffectSource, /removeEventListener\("visibilitychange", onIdleReconcileVisibility\)/);
+  assert.match(idleEffectSource, /removeEventListener\("online", onIdleReconcileOnline\)/);
+  assert.doesNotMatch(idleEffectSource, /if \(!agentRunning\)/);
+
+  // The running→gone transition of the sidebar snapshot is not throttled by
+  // the hook: the pure seam owns that decision.
+  const snapshotEffectSource = source.slice(
+    source.indexOf("const previousSnapshotRunningRef"),
+    source.indexOf("// Missed wake-round content lands silently"),
+  );
+  assert.match(snapshotEffectSource, /previousSnapshotRunningRef\.current = Boolean\(sessionRunning\)/);
+  assert.match(snapshotEffectSource, /reconcileIdleSessionContent\("running_snapshot_gone"\)/);
+});
