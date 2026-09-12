@@ -90,6 +90,7 @@ lib/
   tool-preset-preference.ts  browser-persisted default for fresh sessions
   types.ts            shared TypeScript types
   normalize.ts        normalizeToolCalls() — field name mismatch between file format and our types
+  wake-visibility.ts  shouldReconcileIdleSession() — decides when an idle page silently reloads missed wake-round content
   worktree.ts         project/worktree resolution and git worktree operations
 
 components/
@@ -163,6 +164,7 @@ Newer pi emits `compaction_start` / `compaction_end`; older versions emitted `au
 - The sidebar polls `/api/agent/running` every 2.5 seconds while the tab is visible and pauses polling in background tabs. The session-list response remains the initial fallback.
 - `useAgentSession` treats per-session SSE as primary for chat events and opens it before each prompt. `prompt_done` completes the current UI stage and notification immediately, but the idle SSE stays open for a 30-second grace window and is reused by the next prompt. `agent_start` cancels that close timer; `agent_settled` finishes extension-injected runs that have no wrapper-level `prompt_done` and starts a fresh grace window. Do not close on the first `agent_end`: retries, compaction, and extension-queued messages can continue the same logical prompt.
 - While a run is active, `useAgentSession` periodically calls `GET /api/agent/[id]` and also reconciles on `visibilitychange`/`online`. This fixes missed terminal events from background tabs or half-open connections.
+- An idle page can miss a run entirely: a notification-woken run starts and finishes server-side with no wrapper-level `prompt_done`, possibly while the SSE is closed. When nothing is running locally, `lib/wake-visibility.ts` decides when the page silently reloads the session file: `visibilitychange`/`online` hard signals are throttled to one fetch per 5 seconds, and a running→gone transition of the sidebar snapshot reconciles immediately because the reload is idempotent.
 - Prompt runs use a monotonic run id; late SSE or slow reconciliation responses from an old run must be ignored so they cannot resurrect stale streaming bubbles.
 
 ### Worktrees and project grouping
